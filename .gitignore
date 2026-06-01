@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+.Python
+build/
+dist/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs / runs
+logs/
+runs/
+wandb/
+.cache/
+
+# Local model snapshots (download via HF Hub instead)
+models/
+
+# Heavy data — instructions live in dataset.zip and the README
+dataset/
+checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary / scratch
+*.tmp
+*.bak
+*.bak_*
+nohup.out
+
+# HF dataset bundle (uploaded separately to https://huggingface.co/datasets/Heinz217/GraspLLM-Datasets)
+hf_release/
+
