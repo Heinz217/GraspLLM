@@ -150,7 +150,7 @@ GPU=0 bash scripts/stage2_generate_seqs.sh products --large-graph --compile
 
 For multi-GPU sweeps and even tighter memory / speed budgets we ship three additional opt-in features in `gnn/seq_largegraph.py`. `--shared-emb` lets one owner GPU hold the full fp16 embedding while the others attach to it via CUDA IPC. `--center-batch K` processes `K` centers per GPU forward pass instead of one (default 1). `--emb-shard` row-shards the embedding across workers and uses NCCL all-gather (experimental).
 
-These features are consumed by the multi-GPU driver `gnn.seq_largegraph.compute_ocs_sequences_multi_gpu`; the single-process CLI above accepts the flags for documentation, with the actual integration demonstrated in `gnn/seq_largegraph.py`. See [`LARGE_GRAPH_ADAPTATION.md`](LARGE_GRAPH_ADAPTATION.md) for the full algorithmic and engineering write-up.
+These features are consumed by the multi-GPU driver `gnn.seq_largegraph.compute_ocs_sequences_multi_gpu`; the single-process CLI above accepts the flags for documentation, with the actual integration demonstrated in `gnn/seq_largegraph.py`.
 
 ### Stage 3 — Alignment Tuning
 

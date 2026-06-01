@@ -16,6 +16,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.paths import qwen3_emb_path  # noqa: E402
 
 
+# Cross-device-safe emb gather: same-device short-circuits (zero overhead); IPC view -> route through owner.
+def _emb_gather(emb, idx, local_device):
+    if emb.device == idx.device:
+        return emb[idx]
+    out = emb[idx.to(emb.device, non_blocking=True)]
+    return out.to(local_device, non_blocking=True)
+
+
 # Build a GPU-resident undirected CSR adjacency from a [2, E] edge_index.
 def build_csr_gpu(edge_index: torch.Tensor, num_nodes: int, device):
     src = torch.cat([edge_index[0], edge_index[1]]).to(device)
@@ -70,7 +78,9 @@ def _generate_ocs_sequence_impl(
 
     buf_visited.zero_()
     buf_cand.zero_()
-    cv = embeddings[center_node].unsqueeze(0)
+    cv = _emb_gather(embeddings,
+                     torch.tensor([int(center_node)], device=device),
+                     device)
 
     cur = torch.full((B,), int(center_node), dtype=torch.long, device=device)
     cur[:n_walks] = nbs
@@ -105,14 +115,14 @@ def _generate_ocs_sequence_impl(
         cand_2d = topi
 
         # rel(v,c) = cosine(emb[cand], emb[center]).
-        cand_vecs = embeddings[cand_2d]
+        cand_vecs = _emb_gather(embeddings, cand_2d, device)
         rel = torch.clamp(F.cosine_similarity(
             cand_vecs, cv.expand_as(cand_vecs), dim=-1), min=0)
 
         # struct(v) = mean cosine to K random neighbours (paper definition).
         nb_idx, vmask, take = _gather_nb_matrix_2d(
             cand_2d, valid, nb_flat, ptr, deg, max_k, gen)
-        nb_vecs = embeddings[nb_idx]
+        nb_vecs = _emb_gather(embeddings, nb_idx, device)
         cos = F.cosine_similarity(
             cand_vecs.unsqueeze(2).expand(-1, -1, max_k, -1),
             nb_vecs, dim=-1)

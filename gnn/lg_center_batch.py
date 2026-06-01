@@ -6,6 +6,8 @@ from typing import List
 import torch
 import torch.nn.functional as F
 
+from seq_largegraph import _emb_gather  # cross-device-safe embedding gather
+
 
 # 3D variant of the per-step neighbour gather; cand_3d=[BC,B,C], output [BC,B,C,K].
 @torch.no_grad()
@@ -86,7 +88,7 @@ def generate_ocs_super_batch(
 
     buf_visited.zero_()
     buf_cand.zero_()
-    cv = embeddings[centers_t]  # [BC, D]
+    cv = _emb_gather(embeddings, centers_t, device)  # [BC, D]
 
     walks = torch.full((BC, B, max_steps), -500, dtype=torch.long, device=device)
     arange_BC = torch.arange(BC, device=device).unsqueeze(1).expand(BC, B)
@@ -123,13 +125,13 @@ def generate_ocs_super_batch(
         if not valid.any():
             break
 
-        cand_vecs = embeddings[cand_3d]  # [BC, B, c_max, D]
+        cand_vecs = _emb_gather(embeddings, cand_3d, device)  # [BC, B, c_max, D]
         cv_exp = cv.unsqueeze(1).unsqueeze(2).expand_as(cand_vecs)
         rel = torch.clamp(F.cosine_similarity(cand_vecs, cv_exp, dim=-1), min=0)
 
         nb_idx, vmask, take = _gather_nb_matrix_3d(
             cand_3d, valid, nb_flat, ptr, deg, max_k, gen)
-        nb_vecs = embeddings[nb_idx]  # [BC, B, c_max, K, D]
+        nb_vecs = _emb_gather(embeddings, nb_idx, device)  # [BC, B, c_max, K, D]
         cos = F.cosine_similarity(
             cand_vecs.unsqueeze(3).expand_as(nb_vecs), nb_vecs, dim=-1)
         cos = torch.clamp(cos, min=0) * vmask.float()
