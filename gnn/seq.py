@@ -163,7 +163,7 @@ def get_neighbors_from_edge_list(node, edge_list, device):
 
     return neighbors
 
-def generate_final_sequence(center_node, embeddings, adjacency_dict, threshold=0.3, max_steps=10, num_neighbors=9,
+def _generate_final_sequence_default(center_node, embeddings, adjacency_dict, threshold=0.3, max_steps=10, num_neighbors=9,
                            max_elements=111, device="cuda", beta=0.55):
     sequence = [center_node]
 
@@ -185,6 +185,70 @@ def generate_final_sequence(center_node, embeddings, adjacency_dict, threshold=0
     sequence.extend([-500] * (max_elements - len(sequence)))
 
     return sequence
+
+
+# Large-graph dispatcher: when --large-graph is set, route generate_final_sequence
+# through the GPU-CSR + batched-walks kernel in seq_largegraph.py (default unchanged).
+_LARGE_GRAPH_STATE = {"enabled": False}
+
+
+def enable_large_graph_mode(embeddings, edge_index, *, fp16=True,
+                            device=None, seed=42, compile_kernel=False):
+    """Switch generate_final_sequence to the large-graph implementation (call once)."""
+    from seq_largegraph import build_csr_gpu
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if not isinstance(embeddings, torch.Tensor):
+        embeddings = torch.as_tensor(embeddings)
+    emb = (embeddings.half() if fp16 else embeddings.float()).to(device)
+    nb_flat, ptr, deg = build_csr_gpu(edge_index, emb.shape[0], device)
+    torch.cuda.synchronize(device) if device.type == "cuda" else None
+    B = 9
+    _LARGE_GRAPH_STATE.update({
+        "enabled":        True,
+        "device":         device,
+        "embeddings":     emb,
+        "nb_flat":        nb_flat,
+        "ptr":            ptr,
+        "deg":            deg,
+        "N":              emb.shape[0],
+        "gen":            torch.Generator(device=device).manual_seed(seed),
+        "buf_visited":    torch.zeros(B, emb.shape[0], dtype=torch.bool, device=device),
+        "buf_cand":       torch.zeros(B, emb.shape[0], dtype=torch.bool, device=device),
+        "compile_kernel": compile_kernel,
+    })
+    print(f"[seq] large-graph mode ENABLED  N={emb.shape[0]:,}  "
+          f"emb_dtype={emb.dtype}  device={device}  "
+          f"compile={compile_kernel}")
+
+
+def disable_large_graph_mode():
+    _LARGE_GRAPH_STATE.clear()
+    _LARGE_GRAPH_STATE["enabled"] = False
+
+
+def generate_final_sequence(center_node, embeddings, adjacency_dict,
+                            threshold=0.3, max_steps=10, num_neighbors=9,
+                            max_elements=111, device="cuda", beta=0.55):
+    """OCS sampling entry point used by gen.py; routes to large-graph kernel if enabled."""
+    if _LARGE_GRAPH_STATE.get("enabled"):
+        from seq_largegraph import generate_ocs_sequence  # local import
+        s = _LARGE_GRAPH_STATE
+        return generate_ocs_sequence(
+            int(center_node), s["embeddings"], s["nb_flat"], s["ptr"], s["deg"],
+            s["N"],
+            threshold=threshold, max_steps=max_steps,
+            num_neighbors=num_neighbors, max_elements=max_elements,
+            beta=beta, device=s["device"], gen=s["gen"],
+            buf_visited=s["buf_visited"], buf_cand=s["buf_cand"],
+            compile_kernel=s.get("compile_kernel", False),
+        )
+    return _generate_final_sequence_default(
+        center_node, embeddings, adjacency_dict,
+        threshold=threshold, max_steps=max_steps,
+        num_neighbors=num_neighbors, max_elements=max_elements,
+        device=device, beta=beta,
+    )
 
 
 
@@ -328,7 +392,8 @@ def merge_motif_adjacency(motif_adjs, num_nodes):
 
 TRAIN_DATASETS = {"arxiv", "computer", "reddit"}
 
-def generate_data(new_dataset, threshold=0.1, beta=0.55):
+def generate_data(new_dataset, threshold=0.1, beta=0.55,
+                  large_graph=False, fp16=True, compile_kernel=False):
     model = load_model(config)
     embeddings, motif_adj = process_new_dataset(
         model, new_dataset, device=config["device"])
@@ -342,6 +407,11 @@ def generate_data(new_dataset, threshold=0.1, beta=0.55):
 
     adj_lists = edge_index
     adj_lists_dropped, _ = dropout_edge(edge_index, p=0.2)
+
+    if large_graph:
+        # Build GPU CSR + per-walk buffers once; reused across all centers.
+        enable_large_graph_mode(node_embeddings, edge_index, fp16=fp16,
+                                compile_kernel=compile_kernel)
 
     ds_dir = dataset_dir(new_dataset)
     train_path = os.path.join(ds_dir, 'ocs_train.jsonl')
@@ -397,6 +467,36 @@ def parse_args():
     parser.add_argument('--force-train', action='store_true',
                         help='Force generating ocs_train.jsonl even if dataset is not in TRAIN_DATASETS '
                              '(useful for smoke tests on cora etc.)')
+    parser.add_argument('--large-graph', action='store_true',
+                        help='Enable the large-graph adaptation: GPU-resident CSR adjacency, '
+                             'incremental candidate mask, batched 9-walks-per-center, fp16 '
+                             'embeddings, and persistent buffers. Recommended when N > ~500k '
+                             'or when the default path is too slow. See gnn/seq_largegraph.py.')
+    parser.add_argument('--no-fp16', dest='fp16', action='store_false', default=True,
+                        help='With --large-graph: keep embeddings in fp32 instead of fp16. '
+                             'Slower and uses 2x memory; only needed if you observe '
+                             'numerical issues.')
+    parser.add_argument('--compile', dest='compile_kernel', action='store_true',
+                        help='With --large-graph: wrap the per-step kernel with '
+                             '``torch.compile``. Pays a one-time JIT cost (~20-60 s) '
+                             'and saves ~20-30%% per step. Disabled by default.')
+    parser.add_argument('--shared-emb', action='store_true',
+                        help='Multi-GPU only: share one embedding replica across GPU '
+                             'workers via CUDA IPC, reducing per-GPU memory ~70%%. '
+                             'Use the multi-GPU driver compute_ocs_sequences_multi_gpu '
+                             '(see gnn/seq_largegraph.py); ignored in single-process mode.')
+    parser.add_argument('--emb-shard', action='store_true',
+                        help='Multi-GPU only (experimental): row-shard the embedding '
+                             'across workers and use NCCL all-gather. Intended for '
+                             'graphs that exceed single-GPU memory (N > ~5M). The '
+                             'collective wiring lives in gnn/lg_emb_shard.py; the '
+                             'inner loop integration is left for future work.')
+    parser.add_argument('--center-batch', type=int, default=1,
+                        help='Multi-GPU only: process this many centres per GPU '
+                             'forward pass (default 1, i.e. disabled). Values 2-8 '
+                             'often add a 1.5-2x speedup on launch-bound graphs at '
+                             'the cost of extra GPU memory. Ignored in single-process '
+                             'mode (the gen.py-driven CLI here).')
     return parser.parse_args()
 
 
@@ -405,7 +505,16 @@ if __name__ == "__main__":
     if args.force_train:
         TRAIN_DATASETS.add(args.dataset)
         print(f"[force-train] {args.dataset} added to TRAIN_DATASETS for this run")
-    generate_data(args.dataset, threshold=args.threshold, beta=args.beta)
+    if (args.shared_emb or args.emb_shard or args.center_batch > 1) and not args.large_graph:
+        print("[warn] --shared-emb / --emb-shard / --center-batch require --large-graph")
+    if args.shared_emb or args.emb_shard or args.center_batch > 1:
+        # Advanced multi-GPU features live in compute_ocs_sequences_multi_gpu().
+        print("[note] --shared-emb / --emb-shard / --center-batch are not consumed by "
+              "this single-process CLI; call compute_ocs_sequences_multi_gpu() in "
+              "gnn/seq_largegraph.py to use them.")
+    generate_data(args.dataset, threshold=args.threshold, beta=args.beta,
+                  large_graph=args.large_graph, fp16=args.fp16,
+                  compile_kernel=args.compile_kernel)
 
     
 

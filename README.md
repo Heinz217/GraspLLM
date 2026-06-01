@@ -66,7 +66,7 @@ $GRASPLLM_DATASET_ROOT/<name>/
 
 The naming convention `arxiv` ↔ on-disk `ogbn-arxiv` is handled automatically by `utils/paths.py`.
 
-A few sample Stage-2 outputs from Cora and Pubmed are included under `examples/` so you can inspect the OCS sequence + chat-format prompt schema without running the full pipeline.
+A few sample Stage-2 outputs from Cora and Pubmed are included under `examples/` so you can inspect the optimal contextual subgraph sequence + chat-format prompt schema without running the full pipeline.
 
 ### Repository layout
 
@@ -131,6 +131,26 @@ GPU=0 bash scripts/stage2_generate_seqs.sh cora
 # Force generation of an ocs_train.jsonl for a non-source dataset:
 GPU=0 bash scripts/stage2_generate_seqs.sh cora --force-train
 ```
+
+**Large-graph adaptation (opt-in).** For graphs with millions of nodes
+(e.g. OGBN-Products), the default Python/dict-based sampler is the
+Stage-2 bottleneck. Pass `--large-graph` to switch to a faithful but
+heavily optimised implementation. 
+
+```bash
+# Single-GPU, fp16 (default, recommended):
+GPU=0 bash scripts/stage2_generate_seqs.sh products --large-graph
+
+# Disable fp16 (rare; only if you observe numerical issues):
+GPU=0 bash scripts/stage2_generate_seqs.sh products --large-graph --no-fp16
+
+# Add torch.compile:
+GPU=0 bash scripts/stage2_generate_seqs.sh products --large-graph --compile
+```
+
+For multi-GPU sweeps and even tighter memory / speed budgets we ship three additional opt-in features in `gnn/seq_largegraph.py`. `--shared-emb` lets one owner GPU hold the full fp16 embedding while the others attach to it via CUDA IPC. `--center-batch K` processes `K` centers per GPU forward pass instead of one (default 1). `--emb-shard` row-shards the embedding across workers and uses NCCL all-gather (experimental).
+
+These features are consumed by the multi-GPU driver `gnn.seq_largegraph.compute_ocs_sequences_multi_gpu`; the single-process CLI above accepts the flags for documentation, with the actual integration demonstrated in `gnn/seq_largegraph.py`. See [`LARGE_GRAPH_ADAPTATION.md`](LARGE_GRAPH_ADAPTATION.md) for the full algorithmic and engineering write-up.
 
 ### Stage 3 — Alignment Tuning
 
