@@ -1,10 +1,14 @@
 # GraspLLM
 
-Official code for **GraspLLM: Towards Zero-Shot Generalization on Text-Attributed Graphs with LLMs**.
+This repository hosts the official code for our paper:
+
+>**GraspLLM: Towards Zero-Shot Generalization on Text-Attributed Graphs with LLMs**.
 
 GraspLLM is a framework that combines <ins>**Gra**</ins>ph structural comprehension with the <ins>**s**</ins>emantic understanding <ins>**p**</ins>rowess of <ins>**LLM**</ins>s, enabling LLMs to perform zero-shot reasoning over Text-Attributed Graphs (TAGs) across diverse datasets and tasks.
 
-We support four LLM backbones out of the box: **Vicuna-7B-v1.5**, **Mistral-7B-Instruct-v0.3**, **Llama-3.1-8B-Instruct**, and **Qwen3-8B / Qwen3-30B-A3B-Instruct (MoE)**.
+<p align="center">
+  <img src="assets/graspllm_framework.png" alt="GraspLLM framework" width="100%">
+</p>
 
 ---
 
@@ -29,17 +33,11 @@ pip install flash-attn --no-build-isolation
 
 ### Configure paths
 
-All paths are environment-driven (defaults are repo-local):
-
 ```bash
 export GRASPLLM_DATASET_ROOT=/path/to/datasets         # default: ./dataset
 export GRASPLLM_MODELS_ROOT=/path/to/local_hf_models   # default: ./models
 export GRASPLLM_CHECKPOINT_ROOT=/path/to/checkpoints   # default: ./checkpoints
 ```
-
-The Qwen3-Embedding model directory is resolved by alias (`qwen3-embedding`); place
-`Qwen3-Embedding-8B/` (the standard HF snapshot) under `$GRASPLLM_MODELS_ROOT`,
-or pass `--model-path /abs/path` to `preprocess/build_qwen3_embeddings.py`.
 
 ---
 
@@ -47,7 +45,7 @@ or pass `--model-path /abs/path` to `preprocess/build_qwen3_embeddings.py`.
 
 ### Data
 
-We release the raw graphs of all 14 paper benchmarks on Hugging Face: **<https://huggingface.co/datasets/Heinz217/GraspLLM-Datasets>**.
+We release the raw graphs of all 14 benchmarks on Hugging Face: **<https://huggingface.co/datasets/Heinz217/GraspLLM-Datasets>**.
 
 ```bash
 huggingface-cli download Heinz217/GraspLLM-Datasets \
@@ -58,15 +56,13 @@ The expected layout for each dataset is:
 
 ```
 $GRASPLLM_DATASET_ROOT/<name>/
-├── processed_data.pt        # raw graph: x, edge_index, y, *_mask, raw_texts (provided on HF)
+├── processed_data.pt        # provided on HF
 ├── qwen3_emb_x.pt           # produced by Step 0 
-├── ocs_train.jsonl          # produced by Stage 2 (only for source datasets)
+├── ocs_train.jsonl          # produced by Stage 2
 └── ocs_test.jsonl           # produced by Stage 2
 ```
 
-The naming convention `arxiv` ↔ on-disk `ogbn-arxiv` is handled automatically by `utils/paths.py`.
-
-A few sample Stage-2 outputs from Cora and Pubmed are included under `examples/` so you can inspect the optimal contextual subgraph sequence + chat-format prompt schema without running the full pipeline.
+A few sample Stage-2 outputs from Cora and Pubmed are included under `examples/` so you can inspect the optimal contextual subgraph sequence with chat-format prompt schema without running the full pipeline.
 
 ### Repository layout
 
@@ -98,7 +94,9 @@ GraspLLM/
 
 We provide one clean script per stage. All scripts support both single-GPU and multi-GPU runs.
 
-### Step 0 — Unified Semantic Encoding (Qwen3-Embedding-8B node features)
+### Step 0 — Unified Semantic Encoding 
+
+In this step, we utilize Qwen3-Embedding-8B to extract the node features.
 
 ```bash
 # single GPU
@@ -108,9 +106,17 @@ bash scripts/preprocess_emb.sh cora 0
 bash scripts/preprocess_emb.sh arxiv 0,1,2,3
 ```
 
+By default the encoder is resolved as `$GRASPLLM_MODELS_ROOT/Qwen3-Embedding-8B`. To use a custom location:
+
+```bash
+export QWEN3_EMB_MODEL=/abs/path/to/Qwen3-Embedding-8B
+# or pass it per run
+bash scripts/preprocess_emb.sh cora 0 --  
+```
+
 ### Stage 1 — Motif-Aware Graph Self-Supervised Learning
 
-Trains the dataset-agnostic motif GNN over the source TAGs. Output:
+Trains the dataset-agnostic motif GNN over the source TAGs. Output path:
 `$GRASPLLM_CHECKPOINT_ROOT/structure_learner_qwen3.pth`.
 
 ```bash
@@ -123,7 +129,7 @@ bash scripts/stage1_gnn_pretrain.sh
 
 ### Stage 2 — Optimal Contextual Subgraph Sampling
 
-Runs the GNN-guided greedy node-selection algorithm to materialise the
+Runs the GNN-guided greedy node-selection algorithm to construct the
 contextual subgraph (token sequence) for every center node.
 
 ```bash
@@ -133,8 +139,7 @@ GPU=0 bash scripts/stage2_generate_seqs.sh cora --force-train
 ```
 
 **Large-graph adaptation (opt-in).** For graphs with millions of nodes
-(e.g. OGBN-Products), the default Python/dict-based sampler is the
-Stage-2 bottleneck. Pass `--large-graph` to switch to a faithful but
+(e.g. OGBN-Products), pass `--large-graph` to switch to a faithful but
 heavily optimised implementation. 
 
 ```bash
@@ -148,13 +153,11 @@ GPU=0 bash scripts/stage2_generate_seqs.sh products --large-graph --no-fp16
 GPU=0 bash scripts/stage2_generate_seqs.sh products --large-graph --compile
 ```
 
-For multi-GPU sweeps and even tighter memory / speed budgets we ship three additional opt-in features in `gnn/seq_largegraph.py`. `--shared-emb` lets one owner GPU hold the full fp16 embedding while the others attach to it via CUDA IPC. `--center-batch K` processes `K` centers per GPU forward pass instead of one (default 1). `--emb-shard` row-shards the embedding across workers and uses NCCL all-gather (experimental).
-
-These features are consumed by the multi-GPU driver `gnn.seq_largegraph.compute_ocs_sequences_multi_gpu`; the single-process CLI above accepts the flags for documentation, with the actual integration demonstrated in `gnn/seq_largegraph.py`.
+For multi-GPU sweeps and even tighter memory / speed budgets we ship three additional opt-in features in `gnn/seq_largegraph.py`. `--shared-emb` lets one owner GPU hold the full fp16 embedding while the others attach to it via CUDA IPC. `--center-batch K` processes `K` centers per GPU forward pass instead of one (default 1). `--emb-shard` row-shards the embedding across workers and uses NCCL all-gather.
 
 ### Stage 3 — Alignment Tuning
 
-Trains the alignment projector on top of a frozen LLM backbone.
+Trains the alignment projector on top of a frozen LLM backbone. Currently, we support four LLM backbones out of the box: **Vicuna-7B-v1.5**, **Mistral-7B-Instruct-v0.3**, **Llama-3.1-8B-Instruct**, and **Qwen3-8B / Qwen3-30B-A3B-Instruct (MoE)**.
 
 Single-GPU:
 
@@ -170,7 +173,7 @@ bash scripts/stage3_train.sh \
     --backbone vicuna --source arxiv --gpus 0,1,2,3,4,5,6,7
 ```
 
-Multi-GPU with **DeepSpeed ZeRO-3** (recommended for the 30 B MoE backbone):
+Multi-GPU with **DeepSpeed ZeRO-3**:
 
 ```bash
 bash scripts/stage3_train.sh \
@@ -178,9 +181,6 @@ bash scripts/stage3_train.sh \
     --gpus 0,1,2,3,4,5,6,7 \
     --deepspeed scripts/zero3.json
 ```
-
-Optional flags: `--batch-size`, `--lr`, `--epochs`, `--max-len`,
-`--projector vicuna_2layermh|vicuna_2layersh|linear`, `--out-dir`.
 
 ### Zero-shot evaluation
 
@@ -193,7 +193,7 @@ bash scripts/eval.sh \
     --dataset  cora --gpu 0
 ```
 
-Multi-GPU (sample-parallel, automatic shard + merge):
+Multi-GPU:
 
 ```bash
 bash scripts/eval.sh \
