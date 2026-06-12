@@ -1,8 +1,10 @@
-# GraspLLM
+# GraspLLM: Towards Zero-Shot Generalization on Text-Attributed Graphs with LLMs
 
 This repository hosts the official code for our paper:
 
 >**GraspLLM: Towards Zero-Shot Generalization on Text-Attributed Graphs with LLMs**.
+>
+>*arXiv preprint* [arXiv:2606.11898](https://arxiv.org/abs/2606.11898), 2026.
 
 GraspLLM is a framework that combines <ins>**Gra**</ins>ph structural comprehension with the <ins>**s**</ins>emantic understanding <ins>**p**</ins>rowess of <ins>**LLM**</ins>s, enabling LLMs to perform zero-shot reasoning over Text-Attributed Graphs (TAGs) across diverse datasets and tasks.
 
@@ -209,3 +211,19 @@ The script writes `<ckpt>/answers_<dataset>.jsonl` and prints accuracy on stdout
 ## 4. Acknowledgements
 
 This implementation builds on top of [LLaVA](https://github.com/haotian-liu/LLaVA) and [LLaGA](https://github.com/VITA-Group/LLaGA). We thank their authors for open-sourcing their work.
+
+## 5. Citation
+
+If you find this work useful, please cite our paper:
+
+```bibtex
+@misc{feng2026graspllmzeroshotgeneralizationtextattributed,
+      title={GraspLLM: Towards Zero-Shot Generalization on Text-Attributed Graphs with LLMs}, 
+      author={Hengyi Feng and Zeang Sheng and Meiyi Qiang and Li Yang and Wentao Zhang},
+      year={2026},
+      eprint={2606.11898},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2606.11898}, 
+}
+```
